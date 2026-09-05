@@ -1,0 +1,39 @@
+{
+	"name": "@sukeai/pi-logfwd",
+	"version": "0.1.0",
+	"description": "pi package: bash_logged tool that streams command logs in real time through the pi-logfwd Go binary (PTY, JSONL events, optional log file) / pi 实时命令日志转发扩展",
+	"type": "module",
+	"license": "MIT",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-extension",
+		"extension",
+		"log-forwarder",
+		"pty",
+		"logs",
+		"streaming"
+	],
+	"files": [
+		"extension/extension.ts",
+		"README.md",
+		"LICENSE"
+	],
+	"main": "extension/extension.ts",
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	},
+	"optionalDependencies": {
+		"@sukeai/pi-logfwd-darwin-arm64": "0.1.0",
+		"@sukeai/pi-logfwd-darwin-amd64": "0.1.0",
+		"@sukeai/pi-logfwd-linux-arm64": "0.1.0",
+		"@sukeai/pi-logfwd-linux-amd64": "0.1.0"
+	},
+	"pi": {
+		"extensions": [
+			"./extension/extension.ts"
+		]
+	}
+}

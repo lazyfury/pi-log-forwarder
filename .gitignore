@@ -1,0 +1,11 @@
+# Go build outputs & release staging
+bin/
+.release/
+*.tgz
+
+# Node
+node_modules/
+package-lock.json
+
+# Editor / OS
+.DS_Store
