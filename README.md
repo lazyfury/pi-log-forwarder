@@ -101,7 +101,6 @@ extension/extension.ts   pi 扩展：注册 bash_logged 工具（平台解析 + 
 package.json             主包（pi manifest + optionalDependencies 平台包列表）
 scripts/release.sh       交叉编译 + 发布（Go build → 平台包 → npm publish）
 scripts/set-version.js   主包/平台包版本同步
-.pi/skills/log-forwarding.md  pi 项目 skill（用法 + 边界调研结论）
 ```
 
 ### 本地构建（不经 npm）
