@@ -2,10 +2,12 @@
 
 实时命令日志转发：当 pi 运行命令时，把输出**实时流式**转发回来（而不是内置 bash 工具那样攒到最后一次性返回 + 截断）。
 
-- **bash_logged 工具**：pi 扩展，经 Go 二进制 `pi-logfwd` 在伪终端（PTY）中运行命令，JSONL 事件流逐块推送，可选追加日志文件。
+- **bash 工具（覆盖内置）**：pi 扩展注册名为 `bash`，同名覆盖 pi 内置的缓冲式 bash——模型每次调用 bash 都固定经 Go 二进制 `pi-logfwd` 在伪终端（PTY）中运行命令，JSONL 事件流逐块推送，可选追加日志文件。
 - **pi-logfwd 二进制**：跨平台预编译二进制，作为 npm 平台包随主包一起分发（见下方「平台支持」）。
 
 动机：pi 内置 bash/process 工具是缓冲式的——输出攒到最后一次性返回，且截断为末尾 2000 行 / 50KB；没有 TTY、没有交互输入通道。pi-logfwd 补上：实时流式输出、PTY 支持、日志落盘。
+
+> **为什么不叫 bash_logged**：早期版本注册成独立的 `bash_logged` 工具，与内置 `bash` 并列——模型每次执行命令都在两个工具间“随缘二选一”，导致 pi-logfwd 有时生效有时不生效（实测 23 个会话中仅 4 个用到，shell 调用占比约 3%）。0.2.0 起直接注册名为 `bash` 覆盖内置工具，触发从此 100% 确定：要么不用这个包，要用就全走实时转发。
 
 > 密码提示与 GUI 授权弹窗**不支持**（PTY 只能渲染提示、无人应答；弹窗无法程序化操作）——此时告诉用户手动执行。
 
@@ -13,7 +15,7 @@
 
 ```
 pi (agent)
-  │  bash_logged 工具（@sukeai/pi-logfwd 扩展）
+  │  bash 工具（@sukeai/pi-logfwd 扩展，覆盖内置 bash）
   ▼
 pi-logfwd run -- "shell script"          ← 接收 shell 脚本 / 任意命令
   │  内部：PTY 分配（默认）或管道（--no-pty）
@@ -40,7 +42,7 @@ pi install /path/to/pi-log-forwarder
 pi -e npm:@sukeai/pi-logfwd
 ```
 
-装完在 pi 里 `/reload`，即可调用 `bash_logged` 工具（参数 `command` / `timeout` / `cwd` / `logFile` / `noPty`）。
+装完在 pi 里 `/reload`，内置 `bash` 即被替换——所有 shell 命令自动走实时转发（参数 `command` / `timeout` / `cwd` / `logFile` / `noPty` 可用）。想还原内置 bash：`pi remove npm:@sukeai/pi-logfwd` 后 `/reload`。
 
 ## 平台支持
 
@@ -56,7 +58,7 @@ pi -e npm:@sukeai/pi-logfwd
 
 **Windows 为什么不支持**：`pi-logfwd` 的 PTY 层用 creack/pty，它在 Windows 上直接返回 `ErrUnsupported`（`--no-pty` 管道模式理论上可行，但需额外改 shell 默认值/信号处理，成本高收益低），因此不发布 win32 平台包。
 
-**不支持的平台如何提醒**：全部平台包被 npm 跳过 → 二进制缺失 → `bash_logged` 不会静默报 ENOENT，而是返回明确说明：
+**不支持的平台如何提醒**：全部平台包被 npm 跳过 → 二进制缺失 → `bash`（pi-logfwd）不会静默报 ENOENT，而是返回明确说明：
 
 - **win32**：提示「Windows 不受支持（creack/pty ErrUnsupported），建议在 WSL/容器中运行 pi」；自行编译仅管道版可设 `PI_LOG_FWD_BIN` 绕过。
 - **其他缺二进制**：给出三种装法（`pi install npm:@sukeai/pi-logfwd` / `go build` / 放入 PATH 或 `~/.pi/agent/bin`）。
@@ -97,7 +99,7 @@ pi-logfwd run --timeout 30s 'npm run build'
 
 ```
 cmd/pi-logfwd/           Go 源码（main.go / runner.go）
-extension/extension.ts   pi 扩展：注册 bash_logged 工具（平台解析 + 提醒逻辑）
+extension/extension.ts   pi 扩展：注册 bash 工具覆盖内置（平台解析 + 提醒逻辑）
 package.json             主包（pi manifest + optionalDependencies 平台包列表）
 scripts/release.sh       交叉编译 + 发布（Go build → 平台包 → npm publish）
 scripts/set-version.js   主包/平台包版本同步

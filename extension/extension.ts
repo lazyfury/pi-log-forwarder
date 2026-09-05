@@ -1,10 +1,19 @@
 /**
- * pi-logfwd - pi package extension registering a "bash_logged" tool.
+ * pi-logfwd - pi package extension registering a "bash" tool that REPLACES
+ * pi's built-in (buffered) bash.
+ *
+ * 为什么注册名用 bash：pi 的工具注册表里与内置工具同名的扩展工具会覆盖内置定义
+ * （_refreshToolRegistry：先放 built-in，再按工具名 set 扩展工具）。注册成 bash
+ * 后，模型每次调用 bash 都固定走 pi-logfwd（PTY + 实时流式转发 + 可选日志文件），
+ * 不再存在 "bash / bash_logged 由模型随缘二选一" 的触发不规律问题。
  *
  * Runs commands through the Go binary `pi-logfwd` (PTY, real-time log
  * forwarding, optional log file). Streaming chunks are pushed into the
  * conversation via onUpdate, so output appears as it happens instead of
- * being buffered and truncated by the built-in bash tool.
+ * being buffered until the process exits. Output longer than MAX_CHARS is
+ * mirrored to a temp file (reported at the end) instead of silently losing
+ * its head - the safety net pi's built-in bash used to provide via
+ * temp files.
  *
  * Binary resolution order (checked on every execute):
  *   1. env PI_LOG_FWD_BIN                      (explicit override)
@@ -23,15 +32,19 @@
  * Install:
  *   pi install npm:@sukeai/pi-logfwd    # 推荐：随包自动装当前平台二进制
  *
+ *   装好后 /reload 即覆盖内置 bash（所有 shell 命令经 pi-logfwd 实时转发）；
+ *   想还原内置 bash：pi remove npm:@sukeai/pi-logfwd 后 /reload。
+ *
  * Dev / manual overrides:
  *   PI_LOG_FWD_BIN=/path/to/pi-logfwd   # 指向自建/自编译二进制
  *   cd cmd/pi-logfwd && go build -o ~/.pi/agent/bin/pi-logfwd ./cmd/pi-logfwd
  */
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { existsSync } from "node:fs";
+import { createWriteStream, existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -39,7 +52,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const require = createRequire(import.meta.url);
-const MAX_CHARS = 60_000;
+const MAX_CHARS = 60_000; // 会话文本保留的尾部上限；超出部分镜像到临时文件并报告路径
 const STREAM_INTERVAL_MS = 150;
 
 /** Prebuilt binary platform packages published alongside this package. */
@@ -77,7 +90,7 @@ function resolveBin(): Resolution {
 			bin: null,
 			notice:
 				"Windows 不受支持: pi-logfwd 的 PTY 依赖 (creack/pty) 在 Windows 上返回 ErrUnsupported，未发布 win32 预编译包。\n" +
-				"建议: 在 WSL / 容器中运行 pi 以使用 bash_logged。\n" +
+				"建议: 在 WSL / 容器中运行 pi 以使用本 bash 工具（实时转发）。\n" +
 				"自行交叉编译仅管道版本 (--no-pty，无 PTY) 后，可设 PI_LOG_FWD_BIN 指向该二进制以绕过此提示。",
 		};
 	}
@@ -118,22 +131,26 @@ function resolveBin(): Resolution {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
-		name: "bash_logged",
-		label: "Bash (streamed log forward)",
+		name: "bash",
+		label: "bash",
 		description:
-			"Run a shell command or script through pi-logfwd and stream its logs back in real time. " +
-			"Prefer bash_logged over bash when you need: (a) real-time output streaming instead of " +
-			"end-buffered/truncated output, (b) a command that requires a pseudo-terminal (PTY), or " +
-			"(c) a persistent log file. " +
-			"NOT supported by any pi tool (including this one): interactive secret prompts " +
-			"(sudo/ssh password) and GUI authorization dialogs - PTY can render a prompt but nothing " +
-			"can answer it. For those, tell the user to run the command manually.",
-		promptSnippet: "Run a shell command with real-time log forwarding (PTY support)",
-		// 自定义 renderCall：TUI 里完整显示命令，并追加一行 log-fwd 标签标识控制来源
+			"Run a bash command in the current working directory through pi-logfwd (PTY, real-time " +
+			"log forwarding). Output is streamed back in real time instead of being buffered until " +
+			"the process exits; the conversation keeps the last 60000 chars and longer output is " +
+			"mirrored to a temp file whose path is reported at the end. This tool replaces pi's " +
+			"built-in buffered bash. NOT supported: interactive secret prompts (sudo/ssh password) " +
+			"and GUI authorization dialogs - PTY can render a prompt but nothing can answer it, so " +
+			"tell the user to run those manually. Optionally provide a timeout (seconds), cwd, " +
+			"logFile to append to, or noPty.",
+		promptSnippet: "Execute bash commands (ls, grep, find, etc.) with real-time streamed output (PTY)",
+		promptGuidelines: [
+			"You can inspect PI_* environment variables for current model and session details.",
+		],
+		// 自定义 renderCall：TUI 里完整显示命令，并追加一行 log-fwd 标签标识「经 pi-logfwd 实时转发」
 			renderCall(args, theme, _context) {
 				const command = typeof args.command === "string" ? args.command : "";
 				const commandDisplay = command || theme.fg("toolOutput", "...");
-				let text = theme.fg("toolTitle", theme.bold(`bash_logged ${commandDisplay}`));
+				let text = theme.fg("toolTitle", theme.bold(commandDisplay));
 				if (typeof args.timeout === "number") {
 					text += theme.fg("muted", ` (timeout ${args.timeout}s)`);
 				}
@@ -156,7 +173,7 @@ export default function (pi: ExtensionAPI) {
 			const res = resolveBin();
 			if (!res.ok) {
 				return {
-					content: [{ type: "text", text: `bash_logged 不可用:\n${res.notice}` }],
+					content: [{ type: "text", text: `bash (pi-logfwd) 不可用:\n${res.notice}` }],
 					details: { exitCode: null, forwarded: false, reason: "binary-unavailable" },
 				};
 			}
@@ -170,15 +187,25 @@ export default function (pi: ExtensionAPI) {
 
 			const child = spawn(res.bin, args, { cwd: ctx.cwd, env: process.env });
 
-			let accumulated = "";
+			// 全量镜像到临时文件（原内置 bash 的“完整输出”兜底）：输出 <= MAX_CHARS 时删除
+			// 临时文件；超长时在结果末尾报告文件路径。会话文本始终只保留尾部 MAX_CHARS。
+			let totalChars = 0;
+			let tail = "";
 			let lastStream = 0;
+			let logPath: string | null = null;
+			let logStream: import("node:fs").WriteStream | null = null;
 			const push = (chunk: string) => {
-				accumulated += chunk;
-				if (accumulated.length > MAX_CHARS * 2) accumulated = accumulated.slice(-MAX_CHARS);
+				totalChars += chunk.length;
+				if (!logStream) {
+					logPath = join(tmpdir(), `pi-logfwd-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.log`);
+					logStream = createWriteStream(logPath, { flags: "a" });
+				}
+				logStream.write(chunk);
+				tail = (tail + chunk).slice(-MAX_CHARS);
 				const now = Date.now();
 				if (now - lastStream > STREAM_INTERVAL_MS) {
 					lastStream = now;
-					onUpdate?.({ content: [{ type: "text", text: accumulated.slice(-MAX_CHARS) }] });
+					onUpdate?.({ content: [{ type: "text", text: tail }] });
 				}
 			};
 
@@ -197,7 +224,7 @@ export default function (pi: ExtensionAPI) {
 			child.stderr.on("data", (d: Buffer) => (errText += d.toString()));
 			child.on("error", (e: Error) => {
 				if (e && (e as NodeJS.ErrnoException).code === "ENOENT") {
-					errText += `\nbash_logged 不可用: ${res.bin} 不存在或不可执行。\n${res.notice}`;
+					errText += `\nbash (pi-logfwd) 不可用: ${res.bin} 不存在或不可执行。\n${res.notice}`;
 				} else {
 					errText += `pi-logfwd: ${e.message}\n`;
 				}
@@ -216,8 +243,22 @@ export default function (pi: ExtensionAPI) {
 				child.on("error", finish);
 			});
 
-			const text = (accumulated || "(no output)").slice(-MAX_CHARS);
-			const resultText = errText ? `${text}\n${errText.trimEnd()}` : text;
+			// 关闭日志流；只在文本被截断（输出超长）时保留临时文件
+			if (logStream) {
+				await new Promise<void>((r) => logStream!.end(() => r()));
+				if (totalChars <= MAX_CHARS && logPath) {
+					try {
+						await rm(logPath, { force: true });
+					} catch {
+						/* best-effort cleanup */
+					}
+					logPath = null;
+				}
+			}
+
+			const text = tail || "(no output)";
+			let resultText = errText ? `${text}\n${errText.trimEnd()}` : text;
+			if (logPath) resultText += `\n(输出超长，完整日志已存 ${logPath})`;
 			return {
 				content: [{ type: "text", text: resultText }],
 				details: { exitCode, forwarded: true, logFile: params.logFile ?? null },

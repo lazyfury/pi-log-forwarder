@@ -3,8 +3,7 @@
 # publish the pi package set to npm in one shot.
 #
 # Publishing model (esbuild-style companion packages):
-#   - main package   @sukeai/pi-logfwd            (pi extension, registers
-#                                                  the bash_logged tool)
+#   - main package   @sukeai/pi-logfwd            (pi extension, registers the bash tool that replaces pi's built-in buffered bash)
 #   - platform pkgs  @sukeai/pi-logfwd-<os>-<arch> (native binary + package.json
 #                                                  with matching os/cpu fields)
 # The main package lists all platform packages in optionalDependencies; npm
