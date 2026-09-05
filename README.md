@@ -44,6 +44,14 @@ pi -e npm:@sukeai/pi-logfwd
 
 装完在 pi 里 `/reload`，内置 `bash` 即被替换——所有 shell 命令自动走实时转发（参数 `command` / `timeout` / `cwd` / `logFile` / `noPty` 可用）。想还原内置 bash：`pi remove npm:@sukeai/pi-logfwd` 后 `/reload`。
 
+## 工具结果标记
+
+每次调用的结果末尾会附加一行状态标记，命令失败**不会静默**：
+
+- 退出码非零 → `(exit code: N)`（真退出码取自 Go 端 JSONL `exit` 事件，非 pi-logfwd 进程自身退出码）
+- `timeout` 杀进程 → `(timed out after Ns, exit code 124)`（判据是 exit 事件的 `message: "killed by --timeout"`，命令自己 `exit 124` 不会被误判为超时）
+- 正常退出（0）→ 无标记
+
 ## 平台支持
 
 二进制分发模型：npm **platform companion 包**（esbuild 同款机制）。主包把全部平台包列为 `optionalDependencies`，npm 只安装与当前 `os`/`cpu` 匹配的那一个，其余静默跳过；扩展在运行时按平台定位二进制。

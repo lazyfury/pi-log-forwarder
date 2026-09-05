@@ -137,11 +137,13 @@ export default function (pi: ExtensionAPI) {
 			"Run a bash command in the current working directory through pi-logfwd (PTY, real-time " +
 			"log forwarding). Output is streamed back in real time instead of being buffered until " +
 			"the process exits; the conversation keeps the last 60000 chars and longer output is " +
-			"mirrored to a temp file whose path is reported at the end. This tool replaces pi's " +
-			"built-in buffered bash. NOT supported: interactive secret prompts (sudo/ssh password) " +
-			"and GUI authorization dialogs - PTY can render a prompt but nothing can answer it, so " +
-			"tell the user to run those manually. Optionally provide a timeout (seconds), cwd, " +
-			"logFile to append to, or noPty.",
+			"mirrored to a temp file whose path is reported at the end. The real exit status is never " +
+			"silent: a non-zero exit appends `(exit code: N)` and a tool-timeout kill appends " +
+			"`(timed out after Ns, exit code 124)` at the end of the result. This tool replaces " +
+			"pi's built-in buffered bash. NOT supported: interactive secret prompts (sudo/ssh " +
+			"password) and GUI authorization dialogs - PTY can render a prompt but nothing can " +
+			"answer it, so tell the user to run those manually. Optionally provide a timeout " +
+			"(seconds), cwd, logFile to append to, or noPty.",
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.) with real-time streamed output (PTY)",
 		promptGuidelines: [
 			"You can inspect PI_* environment variables for current model and session details.",
@@ -209,17 +211,32 @@ export default function (pi: ExtensionAPI) {
 				}
 			};
 
+			// 消费 JSONL：output 事件进流式文本；exit 事件携带「真正」的命令退出码
+			// （超时被杀为 124 + message "killed by --timeout"）。child(Go 进程) 的 close
+			// code 虽经 os.Exit 透传命令退出码，但 Go 自身报错/被杀时即偏离、且丢失
+			// timeout 的 message 与 durationMs；故一律以 exit 事件为准，close code 仅在
+			// 事件缺失时兜底。
+			type ExitInfo = { code: number | null; durationMs: number; message: string };
+			let exitEv: ExitInfo | null = null;
 			const rl = createInterface({ input: child.stdout });
 			rl.on("line", (line) => {
 				try {
 					const ev = JSON.parse(line);
-					if (ev.event === "output") push(ev.data);
+					if (ev.event === "output") {
+						push(ev.data);
+					} else if (ev.event === "exit") {
+						exitEv = {
+							code: typeof ev.code === "number" ? ev.code : null,
+							durationMs: typeof ev.durationMs === "number" ? ev.durationMs : 0,
+							message: typeof ev.message === "string" ? ev.message : "",
+						};
+					}
 				} catch {
 					/* ignore malformed lines */
 				}
 			});
 
-			let exitCode: number | null = null;
+			let goExitCode: number | null = null; // child(Go 进程) 自身退出码，仅作 exit 事件缺失时的兜底
 			let errText = "";
 			child.stderr.on("data", (d: Buffer) => (errText += d.toString()));
 			child.on("error", (e: Error) => {
@@ -229,7 +246,7 @@ export default function (pi: ExtensionAPI) {
 					errText += `pi-logfwd: ${e.message}\n`;
 				}
 			});
-			child.on("close", (c) => (exitCode = c));
+			child.on("close", (c) => (goExitCode = c));
 			signal?.addEventListener("abort", () => child.kill("SIGTERM"), { once: true });
 
 			await new Promise<void>((resolve) => {
@@ -256,12 +273,36 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
+			// 真退出码优先（exit 事件）；只有 Go 进程异常退出（未发 exit 事件）时才退回其进程退出码。
+			const exitCode = exitEv ? exitEv.code : goExitCode;
+			// 超时判据只看 exit 事件 message：Go 端仅在 timeout 杀死时写 "killed by --timeout"；
+			// 命令自己 exit 124（如 gnu timeout 惯例）时 message 为空，不应误判为超时。
+			const timedOut = /timeout/i.test(exitEv?.message ?? "");
+
 			const text = tail || "(no output)";
+			const notes: string[] = [];
+			if (timedOut) {
+				const t =
+					typeof params.timeout === "number"
+						? `${params.timeout}s`
+						: `${((exitEv?.durationMs ?? 0) / 1000).toFixed(1)}s`;
+				notes.push(`(timed out after ${t}, exit code 124)`);
+			} else if (exitCode !== null && exitCode !== 0) {
+				notes.push(`(exit code: ${exitCode})`);
+			}
+
 			let resultText = errText ? `${text}\n${errText.trimEnd()}` : text;
+			if (notes.length) resultText += `\n${notes.join("\n")}`;
 			if (logPath) resultText += `\n(输出超长，完整日志已存 ${logPath})`;
 			return {
 				content: [{ type: "text", text: resultText }],
-				details: { exitCode, forwarded: true, logFile: params.logFile ?? null },
+				details: {
+					exitCode,
+					forwarded: true,
+					timedOut,
+					durationMs: exitEv?.durationMs ?? null,
+					logFile: params.logFile ?? null,
+				},
 			};
 		},
 	});
