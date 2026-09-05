@@ -132,6 +132,13 @@ func (r *runner) run() (int, error) {
 	}
 	cmd := exec.Command(shell, "-c", r.opt.script)
 	cmd.Env = os.Environ()
+	// PTY 模式下 git 把 stdout 当成交互终端，会自动拉起 less 分页器；agent 场景里
+	// 没人能在子进程 PTY 里按键，git diff/log 等长输出会一直挂到超时。默认注入
+	// GIT_PAGER=cat 让 git 不分页直接吐全部输出（用户在环境中显式设过 GIT_PAGER
+	// 则尊重其选择，不覆盖）。pipes 模式 stdout 非 TTY，git 本来就不分页，无需处理。
+	if !r.opt.noPty && os.Getenv("GIT_PAGER") == "" {
+		cmd.Env = append(cmd.Env, "GIT_PAGER=cat")
+	}
 	if r.opt.cwd != "" {
 		cmd.Dir = r.opt.cwd
 	}
