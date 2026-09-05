@@ -129,16 +129,17 @@ export default function (pi: ExtensionAPI) {
 			"(sudo/ssh password) and GUI authorization dialogs - PTY can render a prompt but nothing " +
 			"can answer it. For those, tell the user to run the command manually.",
 		promptSnippet: "Run a shell command with real-time log forwarding (PTY support)",
-		// 自定义 renderCall：TUI 里完整显示命令（不定义时兜底渲染只显示工具名）
-		renderCall(args, theme, _context) {
-			const command = typeof args.command === "string" ? args.command : "";
-			const commandDisplay = command || theme.fg("toolOutput", "...");
-			let text = theme.fg("toolTitle", theme.bold(`bash_logged ${commandDisplay}`));
-			if (typeof args.timeout === "number") {
-				text += theme.fg("muted", ` (timeout ${args.timeout}s)`);
-			}
-			return new Text(text, 0, 0);
-		},
+		// 自定义 renderCall：TUI 里完整显示命令，并追加一行 log-fwd 标签标识控制来源
+			renderCall(args, theme, _context) {
+				const command = typeof args.command === "string" ? args.command : "";
+				const commandDisplay = command || theme.fg("toolOutput", "...");
+				let text = theme.fg("toolTitle", theme.bold(`bash_logged ${commandDisplay}`));
+				if (typeof args.timeout === "number") {
+					text += theme.fg("muted", ` (timeout ${args.timeout}s)`);
+				}
+				const tag = theme.fg("dim", theme.bold("log-fwd"));
+				return new Text(`${text}\n${tag}`, 0, 0);
+			},
 		parameters: Type.Object({
 			command: Type.String({ description: "Shell script or command to run" }),
 			timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (default: none)" })),
